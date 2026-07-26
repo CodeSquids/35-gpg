@@ -1,134 +1,75 @@
 """
-IMAP Command Parser
-Parses raw IMAP commands into structured command objects
+Parseur du sous-ensemble IMAP4rev1 supporté.
+
+Une ligne de commande IMAP a la forme :
+    <tag> <commande> [arguments...]
+
+Les arguments peuvent être des atomes nus (LOGIN testuser) ou des chaînes
+entre guillemets (LOGIN "test user" "pass word"), qui peuvent contenir des
+espaces. On ne gère pas les "literals" (`{n}\r\n...`) de la RFC complète :
+c'est une limitation assumée, cohérente avec le sous-ensemble déjà annoncé
+dans le README d'origine.
 """
 
-import re
+from __future__ import annotations
+
 from dataclasses import dataclass
-from enum import Enum
-from typing import List, Optional, Union
-import logging
-
-logger = logging.getLogger(__name__)
 
 
-class CommandType(Enum):
-    """IMAP4rev1 command types"""
-    CAPABILITY = "CAPABILITY"
-    LOGIN = "LOGIN"
-    LOGOUT = "LOGOUT"
-    SELECT = "SELECT"
-    EXAMINE = "EXAMINE"
-    LIST = "LIST"
-    FETCH = "FETCH"
-    STORE = "STORE"
-    SEARCH = "SEARCH"
-    EXPUNGE = "EXPUNGE"
-    NOOP = "NOOP"
-    CREATE = "CREATE"
-    DELETE = "DELETE"
-    RENAME = "RENAME"
-    SUBSCRIBE = "SUBSCRIBE"
-    UNSUBSCRIBE = "UNSUBSCRIBE"
-    STATUS = "STATUS"
-    APPEND = "APPEND"
-    COPY = "COPY"
-    UID = "UID"
+class ParseError(Exception):
+    """Levée quand une ligne ne peut pas être découpée en commande valide."""
 
 
 @dataclass
-class IMAPCommand:
-    """Represents a parsed IMAP command"""
+class ParsedCommand:
     tag: str
-    command_type: CommandType
-    arguments: List[str]
-    raw_arguments: str = ""  # For literal handling
-    
+    name: str  # nom de commande, toujours en MAJUSCULES
+    args: list[str]
 
-class IMAPParser:
-    """Parses IMAP protocol commands from raw text."""
-    
-    # Regular expression for parsing IMAP commands
-    # Format: tag command [arguments] 
-    COMMAND_PATTERN = re.compile(r'^(\S+)\s+(\S+)(?:\s+(.*))?$')
-    
-    # Literal pattern: {n}\r\n followed by n bytes
-    LITERAL_PATTERN = re.compile(r'\{(\d+)\}\r\n')
-    
-    def parse(self, line: str) -> IMAPCommand:
-        """
-        Parse an IMAP command line.
-        
-        Args:
-            line: Raw command line from client (without \r\n)
-            
-        Returns:
-            IMAPCommand object
-            
-        Raises:
-            ValueError: If the line cannot be parsed
-        """
-        line = line.strip()
-        if not line:
-            raise ValueError("Empty command line")
-            
-        match = self.COMMAND_PATTERN.match(line)
-        if not match:
-            raise ValueError(f"Invalid command format: {line}")
-            
-        tag, command_str, args_str = match.groups()
-        
-        # Convert command string to enum
-        try:
-            command_type = CommandType(command_str.upper())
-        except ValueError:
-            raise ValueError(f"Unknown command: {command_str}")
-            
-        # Parse arguments
-        arguments = []
-        if args_str:
-            # Simple argument splitting - will be enhanced for literals
-            arguments = self._parse_arguments(args_str)
-            
-        return IMAPCommand(
-            tag=tag,
-            command_type=command_type,
-            arguments=arguments,
-            raw_arguments=args_str or ""
-        )
-        
-    def _parse_arguments(self, args_str: str) -> List[str]:
-        """
-        Parse command arguments, handling quoted strings and literals.
-        This is a simplified parser - a full implementation would need 
-        to handle nested quotes, literals, etc. properly.
-        """
-        arguments = []
-        current = ""
-        in_quotes = False
-        i = 0
-        
-        while i < len(args_str):
-            char = args_str[i]
-            
-            if char == '"' and (i == 0 or args_str[i-1] != '\\'):
-                in_quotes = not in_quotes
-                current += char
-            elif char == ' ' and not in_quotes:
-                if current:
-                    arguments.append(current)
-                    current = ""
-            elif char == '{' and not in_quotes:
-                # Handle literal - this is simplified
-                # A full implementation would need to parse the literal size
-                # and extract the literal data from the stream
-                current += char
-            else:
-                current += char
-                
+
+def parse_line(line: str) -> ParsedCommand:
+    line = line.rstrip("\r\n")
+    if not line.strip():
+        raise ParseError("Ligne vide")
+
+    tokens = _tokenize(line)
+    if len(tokens) < 2:
+        raise ParseError("Commande incomplète : tag et nom de commande requis")
+
+    tag, name, *args = tokens
+    return ParsedCommand(tag=tag, name=name.upper(), args=args)
+
+
+def _tokenize(line: str) -> list[str]:
+    tokens: list[str] = []
+    i = 0
+    n = len(line)
+
+    while i < n:
+        while i < n and line[i] == " ":
             i += 1
-            
-        if current:
-            arguments.append(current)
-            
-        return arguments
+        if i >= n:
+            break
+
+        if line[i] == '"':
+            j = i + 1
+            buf: list[str] = []
+            while j < n and line[j] != '"':
+                if line[j] == "\\" and j + 1 < n:
+                    buf.append(line[j + 1])
+                    j += 2
+                else:
+                    buf.append(line[j])
+                    j += 1
+            if j >= n:
+                raise ParseError("Chaîne entre guillemets non terminée")
+            tokens.append("".join(buf))
+            i = j + 1
+        else:
+            j = i
+            while j < n and line[j] != " ":
+                j += 1
+            tokens.append(line[i:j])
+            i = j
+
+    return tokens

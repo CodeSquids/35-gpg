@@ -1,80 +1,72 @@
-﻿"""
-IMAP Authentication Commands
-Handles CAPABILITY, LOGIN, and LOGOUT commands
+"""
+Commandes du groupe AUTHENTICATION : CAPABILITY, LOGIN, LOGOUT, et
+l'extension REGISTER (non-standard, ajoutée pour permettre la création de
+compte directement via le protocole -- cf. ROADMAP.md, Étape 3).
 """
 
-from typing import List
-from ..server.parser import IMAPCommand
-from ..storage.maildir_backend import MaildirBackend
-import logging
-from typing import TYPE_CHECKING
+from __future__ import annotations
 
-if TYPE_CHECKING:
-    from ..server.session import IMAPSession
+from accounts import AccountAlreadyExistsError, InvalidCredentialsError
+from accounts.store import InvalidUsernameError
 
-logger = logging.getLogger(__name__)
+from ..server.session_state import SessionState
 
 
-class AuthCommands:
-    """Handles IMAP authentication commands"""
-    
-    def __init__(self, session: "IMAPSession", storage: MaildirBackend):
-        self.session = session
-        self.storage = storage
-         
-    async def handle_capability(self, command: IMAPCommand):
-        """Handle CAPABILITY command"""
-        # Basic IMAP4rev1 capabilities
-        capabilities = [
-            "IMAP4REV1",
-            "IMAP4",
-            "STARTTLS",  # Even though we don't implement it, we advertise it per RFC
-            "LOGIN"      # We support plain text login
-        ]
-        
-        capability_line = "CAPABILITY " + " ".join(capabilities)
-        await self.session.send_untagged(capability_line)
-        await self.session.send_tagged_response(
-            command.tag, "OK", "CAPABILITY completed"
-        )
-        
-    async def handle_login(self, command: IMAPCommand):
-        """Handle LOGIN command"""
-        if self.session.state != "NOT_AUTHENTICATED":
-            await self.session.send_tagged_response(
-                command.tag, "NO", "Cannot LOGIN in current state"
-            )
-            return
-            
-        if len(command.arguments) < 2:
-            await self.session.send_tagged_response(
-                command.tag, "BAD", "LOGIN command requires username and password"
-            )
-            return
-            
-        username = command.arguments[0].strip('"')
-        password = command.arguments[1].strip('"')
-        
-        # Validate credentials against our storage
-        if self.storage.validate_user(username, password):
-            self.session.authenticated_user = username
-            self.session.state = "AUTHENTICATED"
-            await self.session.send_tagged_response(
-                command.tag, "OK", "LOGIN completed"
-            )
-            logger.info(f"User {username} logged in successfully")
-        else:
-            await self.session.send_tagged_response(
-                command.tag, "NO", "LOGIN failed: invalid username or password"
-            )
-            logger.warning(f"Failed login attempt for user: {username}")
-            
-    async def handle_logout(self, command: IMAPCommand):
-        """Handle LOGOUT command"""
-        # Send BYE response before closing
-        await self.session.send_untagged("BYE LOGOUT requested")
-        await self.session.send_tagged_response(
-            command.tag, "OK", "LOGOUT completed"
-        )
-        await self.session.close()
-        logger.info("Client logged out")
+def handle_capability(session, tag, args):
+    # CAPABILITY est volontairement "neutre" : elle ne doit JAMAIS modifier
+    # session.state. C'est précisément l'inverse de ça qui causait le bug
+    # d'origine (LOGIN refusé juste après un CAPABILITY).
+    return [
+        "* CAPABILITY IMAP4REV1 IMAP4",
+        f"{tag} OK CAPABILITY completed",
+    ]
+
+
+def handle_register(session, tag, args):
+    """
+    Extension non-standard : REGISTER <username> <password>
+    Uniquement autorisée avant authentification (comme LOGIN).
+    """
+    if session.state != SessionState.NOT_AUTHENTICATED:
+        return [f"{tag} NO Cannot REGISTER in current state"]
+    if len(args) < 2:
+        return [f"{tag} BAD REGISTER requires a username and a password"]
+
+    username, password = args[0], args[1]
+    try:
+        session.account_store.create_account(username, password)
+    except InvalidUsernameError as e:
+        return [f"{tag} NO {e}"]
+    except AccountAlreadyExistsError as e:
+        return [f"{tag} NO {e}"]
+    except ValueError as e:
+        return [f"{tag} NO {e}"]
+
+    session.backend.ensure_mailbox(username, "INBOX")
+    return [f"{tag} OK REGISTER completed"]
+
+
+def handle_login(session, tag, args):
+    if session.state != SessionState.NOT_AUTHENTICATED:
+        return [f"{tag} NO Cannot LOGIN in current state"]
+    if len(args) < 2:
+        return [f"{tag} BAD LOGIN requires a username and a password"]
+
+    username, password = args[0], args[1]
+    try:
+        session.account_store.verify_password(username, password)
+    except InvalidCredentialsError:
+        return [f"{tag} NO LOGIN failed"]
+
+    session.state = SessionState.AUTHENTICATED
+    session.username = username
+    session.backend.ensure_mailbox(username, "INBOX")
+    return [f"{tag} OK LOGIN completed"]
+
+
+def handle_logout(session, tag, args):
+    session.state = SessionState.LOGOUT
+    return [
+        "* BYE LOGOUT requested",
+        f"{tag} OK LOGOUT completed",
+    ]

@@ -1,215 +1,76 @@
-# IMAP4rev1 Server
-
-An academic implementation of a subset of the IMAP4rev1 protocol (RFC 3501) in Python 3.11+.
-
-## Features
-
-- Implements a functional subset of IMAP4rev1:
-  - CAPABILITY
-  - LOGIN / LOGOUT
-  - SELECT / EXAMINE
-  - LIST
-  - FETCH (FLAGS, UID, BODY[], BODY[HEADER])
-  - STORE (flag changes)
-  - SEARCH (ALL, UNSEEN, FROM)
-  - EXPUNGE
-  - NOOP
-  - Additional mailbox commands: CREATE, DELETE, RENAME, SUBSCRIBE, UNSUBSCRIBE
-- Uses asyncio for asynchronous I/O
-- Maildir-style mailbox storage
-- State machine enforcement (Not Authenticated → Authenticated → Selected)
-- Proper handling of tagged and untagged responses
-- Basic search functionality
-- Flag management (\\Seen, \\Answered, \\Flagged, \\Deleted, \\Draft)
-
-## Architecture
-
-The server follows a strict separation of concerns:
-
-```
-imap_server/
-├── main.py                  # Entry point
-├── server/
-│   ├── tcp_server.py        # TCP server using asyncio streams
-│   ├── session.py           # Per-connection state machine
-│   └── parser.py            # IMAP command parser
-├── commands/
-│   ├── auth.py              # AUTHENTICATION commands
-│   └── mailbox.py           # MAILBOX management commands
-│   └── messages.py          # MESSAGE manipulation commands
-├── storage/
-│   ├── models.py            # Data models (Message, Mailbox)
-│   └── maildir_backend.py   # Maildir storage implementation
-├── tests/                   # Unit tests
-├── data/                    # Mailbox storage directory
-├── requirements.txt         # Dependencies (none for production)
-└── README.md                # This file
+```bash
+.venv/bin/python -m pytest tests/ -v
 ```
 
-## Requirements
+## TLS pour un réseau VirtualBox
 
-- Python 3.11+
-- No external dependencies for runtime (uses only standard library)
-- For running tests: `pytest`
+TLS est désactivé par défaut afin de garder les tests locaux simples. Pour
+activer le TLS implicite, fournissez un certificat PEM et sa clé privée aux
+deux serveurs. Les ports standards sont 993 (IMAPS) et 465 (SMTPS).
 
-## Installation
-
-1. Clone this repository
-2. Ensure you have Python 3.11+ installed
-3. (Optional) Create a virtual environment:
-   ```bash
-   python -m venv venv
-   source venv/bin/activate  # On Windows: venv\Scripts\activate
-   ```
-4. Install test dependencies if needed:
-   ```bash
-   pip install pytest
-   ```
-
-## Running the Server
-
-To start the IMAP server on localhost port 1143:
+Exemple avec un certificat auto-signé pour une VM dont l'IP privée est
+`192.168.56.10` :
 
 ```bash
-python -m imap_server.main
+mkdir -p certs
+openssl req -x509 -newkey rsa:3072 -sha256 -nodes -days 365 \
+  -keyout certs/server-key.pem -out certs/server-cert.pem \
+  -subj "/CN=192.168.56.10" \
+  -addext "subjectAltName=IP:192.168.56.10"
+
+MAIL_TLS_CERT_FILE=certs/server-cert.pem \
+MAIL_TLS_KEY_FILE=certs/server-key.pem \
+python3.13 -m imap_server.main --host 0.0.0.0 --port 993
 ```
 
-The server will listen on `localhost:1143` by default.
-
-To change the host or port, modify the `main.py` file or pass command-line arguments (not implemented in this basic version).
-
-## Testing
-
-To run the test suite:
+Dans un second terminal :
 
 ```bash
-pytest
+MAIL_TLS_CERT_FILE=certs/server-cert.pem \
+MAIL_TLS_KEY_FILE=certs/server-key.pem \
+python3.13 -m smtp_server.main --host 0.0.0.0 --port 465
 ```
 
-## Connecting to the Server
+Dans Thunderbird, choisissez **SSL/TLS** pour IMAP et SMTP. Un certificat
+auto-signé doit être accepté une première fois par le client (ou ajouté à ses
+autorités de confiance).
 
-You can test the server using standard IMAP clients or command-line tools:
 
-### Using telnet or netcat
+## INSTRUCTIONS
+
+TLS implicite est maintenant implémenté pour IMAP et SMTP.
+
+- IMAPS : port `993`
+- SMTPS : port `465`
+- TLS est activé avec `MAIL_TLS_CERT_FILE` et `MAIL_TLS_KEY_FILE`.
+- TLS 1.2 minimum ; un certificat ou une clé manquante produit une erreur explicite.
+- Les clés `certs/*.pem` sont ignorées par Git.
+- Tests : **69 réussis**.
+
+Les modifications sont dans [config.py](/home/ubundesk/35-gpg/config.py), les serveurs IMAP/SMTP et le guide de démarrage dans [README.md](/home/ubundesk/35-gpg/README.md).
+
+Sur la VM serveur :
 
 ```bash
-telnet localhost 1143
-# or
-nc localhost 1143
+mkdir -p certs
+openssl req -x509 -newkey rsa:3072 -sha256 -nodes -days 365 \
+  -keyout certs/server-key.pem -out certs/server-cert.pem \
+  -subj "/CN=VOTRE_IP_VM" \
+  -addext "subjectAltName=IP:VOTRE_IP_VM"
 ```
 
-### Using OpenSSL (for testing TLS-like behavior, though we don't implement TLS)
+Puis, dans deux terminaux :
 
 ```bash
-openssl s_client -connect localhost:1143 -quiet
+MAIL_TLS_CERT_FILE=certs/server-cert.pem \
+MAIL_TLS_KEY_FILE=certs/server-key.pem \
+.venv/bin/python -m imap_server.main --host 0.0.0.0 --port 993
 ```
-
-### Example Session
-
-```
-* OK IMAP4rev1 server ready
-a001 CAPABILITY
-* CAPABILITY IMAP4REV1 IMAP4 STARTTLS LOGIN
-a001 OK CAPABILITY completed
-a002 LOGIN "testuser" "testpass"
-a002 OK LOGIN completed
-a003 SELECT "INBOX"
-* FLAGS (\Answered \Flagged \Draft \Deleted \Seen)
-* 15 EXISTS
-* 0 RECENT
-* OK [UIDVALIDITY 1234567890] UIDs valid
-* OK [PERMANENTFLAGS (\Answered \Flagged \Draft \Deleted \Seen*)] Limited
-a003 OK [READ-WRITE] SELECT completed
-a004 FETCH 1 FLAGS
-* 1 FETCH (FLAGS (\Seen))
-a004 OK FETCH completed
-a005 LOGOUT
-* BYE LOGOUT requested
-a005 OK LOGOUT completed
-```
-
-## Implementation Notes
-
-### State Management
-The connection progresses through three states:
-1. **NOT AUTHENTICATED**: Initial state, only CAPABILITY and LOGIN allowed
-2. **AUTHENTICATED**: After successful LOGIN, mailbox commands allowed
-3. **SELECTED**: After SELECT/EXAMINE, message commands allowed
-4. **LOGOUT**: After LOGOUT command
-
-### Mailbox Storage
-- Uses Maildir-style directory structure under `data/`
-- Each user has a directory: `data/<username>/`
-- Each mailbox is a subdirectory: `data/<username>/<mailbox>/`
-- Each mailbox contains `tmp`, `new`, and `cur` subdirectories
-- Messages are stored as files with Maildir naming conventions
-
-### Limitations
-- No TLS/STARTTLS encryption (as per requirements)
-- Plain-text LOGIN only
-- No concurrent access locking (single-threaded per connection, but multiple connections possible)
-- No persistent UIDVALIDITY across restarts (reset on each startup)
-- No actual message parsing (headers/body are treated as opaque bytes)
-- Search functionality limited to ALL, UNSEEN, FROM
-- No support for UTF-8 or internationalized mailbox names
-
-## Project Structure
-
-See the [Architecture](#architecture) section above for details.
-
-### Key Components
-
-#### `main.py`
-Entry point that creates and starts the TCP server.
-
-#### `server/tcp_server.py`
-Handles accepting incoming TCP connections and creating sessions.
-
-#### `server/session.py`
-Manages the state of a single client connection, including:
-- Reading commands from the client
-- Dispatching commands to appropriate handlers
-- Sending responses to the client
-- State transitions
-
-#### `server/parser.py`
-Parses raw IMAP command lines into structured command objects.
-
-#### `commands/`
-Contains implementations for each IMAP command group:
-- `auth.py`: CAPABILITY, LOGIN, LOGOUT
-- `mailbox.py`: SELECT, EXAMINE, LIST, CREATE, DELETE, RENAME, SUBSCRIBE, UNSUBSCRIBE, STATUS
-- `messages.py`: FETCH, STORE, SEARCH, EXPUNGE, COPY, UID
-
-#### `storage/`
-- `models.py`: Defines `Message` and `Mailbox` data classes
-- `maildir_backend.py`: Implements Maildir-style storage on disk
-
-## Development
-
-This project was developed as an academic exercise to understand the IMAP protocol and practice asynchronous Python programming.
-
-### Extending the Server
-
-To add new IMAP commands:
-1. Add a method to the appropriate command class in `commands/`
-2. Add a call to that method in `session.py`'s command dispatcher
-3. Update the parser if needed (for new command types)
-4. Add unit tests in the `tests/` directory
-
-### Running Tests
 
 ```bash
-# Run all tests
-pytest
-
-# Run tests with coverage (if coverage is installed)
-pytest --cov=imap_server
-
-# Run a specific test file
-pytest tests/test_auth.py
+MAIL_TLS_CERT_FILE=certs/server-cert.pem \
+MAIL_TLS_KEY_FILE=certs/server-key.pem \
+.venv/bin/python -m smtp_server.main --host 0.0.0.0 --port 465
 ```
 
-## License
-
-This project is open source and available under the MIT License.
+Dans Thunderbird, mettez l’IP privée de la VM serveur et sélectionnez **SSL/TLS** pour IMAP et SMTP. Acceptez l’exception de certificat auto-signé lors de la première connexion.
