@@ -164,3 +164,23 @@ def test_list_mailboxes(backend):
     backend.ensure_mailbox("alice", "INBOX")
     backend.ensure_mailbox("alice", "Sent")
     assert backend.list_mailboxes("alice") == ["INBOX", "Sent"]
+
+
+def test_inbox_is_case_insensitive(backend):
+    """RFC 3501 : INBOX doit être insensible à la casse, contrairement aux
+    autres noms de mailbox."""
+    uid = backend.deliver_message("alice", b"body", mailbox="INBOX")
+
+    # 'inbox', 'Inbox', 'INBOX' doivent tous pointer vers la même boîte
+    assert backend.get_message("alice", uid, mailbox="inbox").raw == b"body"
+    assert backend.get_message("alice", uid, mailbox="Inbox").raw == b"body"
+    assert len(backend.list_messages("alice", mailbox="inbox")) == 1
+    assert len(backend.list_messages("alice", mailbox="INBOX")) == 1
+
+    # Un seul dossier physique doit avoir été créé, pas un par variante de casse
+    assert backend.list_mailboxes("alice") == ["INBOX"]
+
+    # Les AUTRES noms de mailbox restent, eux, sensibles à la casse
+    backend.ensure_mailbox("alice", "Sent")
+    backend.ensure_mailbox("alice", "sent")
+    assert set(backend.list_mailboxes("alice")) == {"INBOX", "Sent", "sent"}
