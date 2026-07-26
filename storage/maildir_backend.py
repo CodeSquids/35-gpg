@@ -77,6 +77,18 @@ def _decode_flags(letters: str) -> set[Flag]:
     return result
 
 
+def _normalize_mailbox_name(mailbox: str) -> str:
+    """
+    RFC 3501 impose que le nom de mailbox 'INBOX' soit traité de façon
+    insensible à la casse (INBOX, Inbox, inbox... désignent la même boîte).
+    Les autres noms de mailbox restent sensibles à la casse (comportement
+    standard de la plupart des serveurs IMAP réels).
+    """
+    if mailbox.strip().upper() == "INBOX":
+        return "INBOX"
+    return mailbox
+
+
 def _split_info_suffix(filename: str) -> tuple[str, str]:
     """
     Sépare un nom de fichier Maildir en (base, lettres_de_flags).
@@ -113,6 +125,7 @@ class MaildirBackend:
         return os.path.join(self._data_dir, username)
 
     def _mailbox_dir(self, username: str, mailbox: str) -> str:
+        mailbox = _normalize_mailbox_name(mailbox)
         return os.path.join(self._user_dir(username), mailbox)
 
     def _uidlist_path(self, username: str, mailbox: str) -> str:
