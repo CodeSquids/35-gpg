@@ -39,6 +39,8 @@ _DISPATCH = {
     "SELECT": mailbox.handle_select,
     "EXAMINE": mailbox.handle_examine,
     "LIST": mailbox.handle_list,
+    "LSUB": mailbox.handle_lsub,
+    "STATUS": mailbox.handle_status,
     "CREATE": mailbox.handle_create,
     "DELETE": mailbox.handle_delete,
     "RENAME": mailbox.handle_rename,
@@ -47,6 +49,7 @@ _DISPATCH = {
     "FETCH": messages.handle_fetch,
     "STORE": messages.handle_store,
     "SEARCH": messages.handle_search,
+    "UID": messages.handle_uid,
     "EXPUNGE": messages.handle_expunge,
     "NOOP": messages.handle_noop,
 }

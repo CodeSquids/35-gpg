@@ -17,7 +17,7 @@ def handle_capability(session, tag, args):
     # session.state. C'est précisément l'inverse de ça qui causait le bug
     # d'origine (LOGIN refusé juste après un CAPABILITY).
     return [
-        "* CAPABILITY IMAP4REV1 IMAP4 AUTH=PLAIN",
+        "* CAPABILITY IMAP4REV1 IMAP4",
         f"{tag} OK CAPABILITY completed",
     ]
 

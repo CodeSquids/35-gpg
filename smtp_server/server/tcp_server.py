@@ -11,6 +11,7 @@ mode ligne par ligne.
 from __future__ import annotations
 
 import asyncio
+import os
 
 from accounts import AccountStore
 from storage import MaildirBackend
@@ -18,10 +19,23 @@ from storage import MaildirBackend
 from .session import SmtpSession
 from .session_state import SmtpState
 
+# Mode debug : IMAP_DEBUG a son equivalent cote SMTP -> SMTP_DEBUG=1
+_DEBUG = os.environ.get("SMTP_DEBUG", "") not in ("", "0", "false", "False")
+
+
+def _debug(direction: str, text: str) -> None:
+    if _DEBUG:
+        print(f"[SMTP {direction}] {text}")
+
 
 async def _handle_client(reader, writer, account_store, backend) -> None:
+    peer = writer.get_extra_info("peername")
+    _debug("CONN", f"Nouvelle connexion depuis {peer}")
+
     session = SmtpSession(account_store=account_store, backend=backend)
-    writer.write(b"220 Local mail server ready\r\n")
+    greeting = "220 Local mail server ready"
+    _debug("<<<", greeting)
+    writer.write((greeting + "\r\n").encode("utf-8"))
     await writer.drain()
 
     data_buffer: list[bytes] = []
@@ -30,15 +44,18 @@ async def _handle_client(reader, writer, account_store, backend) -> None:
         while True:
             line = await reader.readline()
             if not line:
+                _debug("CONN", f"{peer} a fermé la connexion")
                 break  # client a fermé la connexion
 
             if session.in_data_mode:
                 stripped = line.rstrip(b"\r\n")
                 if stripped == b".":
                     raw_message = b"\r\n".join(data_buffer)
+                    _debug(">>> DATA", f"({len(raw_message)} octets recus)")
                     data_buffer = []
                     responses = session.finish_data(raw_message)
                     for response in responses:
+                        _debug("<<<", response)
                         writer.write((response + "\r\n").encode("utf-8"))
                     await writer.drain()
                     continue
@@ -54,6 +71,7 @@ async def _handle_client(reader, writer, account_store, backend) -> None:
             text = line.decode("utf-8", errors="replace").rstrip("\r\n")
             if not text.strip():
                 continue
+            _debug(">>>", text)
 
             parts = text.split(" ", 1)
             verb = parts[0]
@@ -61,6 +79,7 @@ async def _handle_client(reader, writer, account_store, backend) -> None:
 
             responses = session.handle_command(verb, arg)
             for response in responses:
+                _debug("<<<", response)
                 writer.write((response + "\r\n").encode("utf-8"))
             await writer.drain()
 
@@ -74,16 +93,23 @@ async def _handle_client(reader, writer, account_store, backend) -> None:
             pass
 
 
-async def run_server(host: str, port: int, data_dir: str) -> None:
+async def create_server(host: str, port: int, data_dir: str) -> asyncio.base_events.Server:
+    """Voir le commentaire équivalent dans imap_server/server/tcp_server.py."""
     account_store = AccountStore(data_dir=data_dir)
     backend = MaildirBackend(data_dir=data_dir)
 
     async def handler(reader, writer):
         await _handle_client(reader, writer, account_store, backend)
 
-    server = await asyncio.start_server(handler, host, port)
+    return await asyncio.start_server(handler, host, port)
+
+
+async def run_server(host: str, port: int, data_dir: str) -> None:
+    server = await create_server(host, port, data_dir)
     addr = ", ".join(str(sock.getsockname()) for sock in server.sockets or [])
     print(f"Serveur SMTP en écoute sur {addr}")
+    if _DEBUG:
+        print("Mode debug active (SMTP_DEBUG=1) : chaque ligne echangee sera affichee.")
 
     async with server:
         await server.serve_forever()

@@ -8,7 +8,7 @@ import pytest
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from accounts import AccountStore
-from storage import MaildirBackend
+from storage import Flag, MaildirBackend
 from imap_server.server.session import ImapSession
 from imap_server.server.session_state import SessionState
 
@@ -213,3 +213,102 @@ def test_select_inbox_is_case_insensitive(env):
     session.handle_command("a001", "LOGIN", ["andria", "hunter2"])
     resp = session.handle_command("a002", "SELECT", ["inbox"])
     assert any("1 EXISTS" in line for line in resp)
+
+
+def test_lsub_lists_mailboxes(env):
+    """LSUB est indispensable pour de vrais clients (Thunderbird...) qui
+    l'utilisent pour peupler leur panneau de dossiers apres le login."""
+    session = _session(env)
+    session.handle_command("a001", "LOGIN", ["andria", "hunter2"])
+    resp = session.handle_command("a002", "LSUB", ["", "*"])
+    assert any('* LSUB () "/" INBOX' in line for line in resp)
+    assert any("OK LSUB completed" in line for line in resp)
+
+
+def test_status_reports_counts(env):
+    account_store, backend = env
+    backend.deliver_message("andria", b"first")
+    backend.deliver_message("andria", b"second")
+
+    session = _session(env)
+    session.handle_command("a001", "LOGIN", ["andria", "hunter2"])
+    session.handle_command("a002", "SELECT", ["INBOX"])
+    session.handle_command("a003", "STORE", ["1", "+FLAGS", "(\\Seen)"])
+
+    resp = session.handle_command("a004", "STATUS", ["INBOX", "(MESSAGES", "UNSEEN)"])
+    assert any("MESSAGES 2" in line for line in resp)
+    assert any("UNSEEN 1" in line for line in resp)
+    assert any("OK STATUS completed" in line for line in resp)
+
+
+def test_uid_fetch_all_with_wildcard(env):
+    """Reproduit exactement la sequence rapportee par Thunderbird :
+    'UID FETCH 1:* (FLAGS)' juste apres un SELECT."""
+    account_store, backend = env
+    backend.deliver_message("andria", b"first")
+    backend.deliver_message("andria", b"second")
+
+    session = _session(env)
+    session.handle_command("a001", "LOGIN", ["andria", "hunter2"])
+    session.handle_command("a002", "SELECT", ["INBOX"])
+
+    resp = session.handle_command("a003", "UID", ["FETCH", "1:*", "(FLAGS)"])
+    assert any("UID 1" in line for line in resp)
+    assert any("UID 2" in line for line in resp)
+    assert any("OK UID FETCH completed" in line for line in resp)
+
+
+def test_uid_fetch_body_marks_seen_and_includes_uid(env):
+    account_store, backend = env
+    backend.deliver_message("andria", b"Subject: Salut\r\n\r\nCoucou")
+
+    session = _session(env)
+    session.handle_command("a001", "LOGIN", ["andria", "hunter2"])
+    session.handle_command("a002", "SELECT", ["INBOX"])
+
+    resp = session.handle_command("a003", "UID", ["FETCH", "1", "BODY[]"])
+    assert any("UID 1" in line for line in resp)
+    assert any("Coucou" in line for line in resp)
+
+    message = backend.get_message("andria", uid=1)
+    assert Flag.SEEN in message.flags
+
+
+def test_uid_store_by_uid_not_sequence(env):
+    account_store, backend = env
+    backend.deliver_message("andria", b"first")
+    backend.deliver_message("andria", b"second")
+
+    session = _session(env)
+    session.handle_command("a001", "LOGIN", ["andria", "hunter2"])
+    session.handle_command("a002", "SELECT", ["INBOX"])
+
+    resp = session.handle_command("a003", "UID", ["STORE", "2", "+FLAGS", "(\\Flagged)"])
+    assert any("UID 2" in line for line in resp)
+
+    message = backend.get_message("andria", uid=2)
+    assert Flag.FLAGGED in message.flags
+    message1 = backend.get_message("andria", uid=1)
+    assert Flag.FLAGGED not in message1.flags
+
+
+def test_uid_search_unseen_returns_uids(env):
+    account_store, backend = env
+    backend.deliver_message("andria", b"first")
+    backend.deliver_message("andria", b"second")
+
+    session = _session(env)
+    session.handle_command("a001", "LOGIN", ["andria", "hunter2"])
+    session.handle_command("a002", "SELECT", ["INBOX"])
+    session.handle_command("a003", "UID", ["STORE", "1", "+FLAGS", "(\\Seen)"])
+
+    resp = session.handle_command("a004", "UID", ["SEARCH", "UNSEEN"])
+    assert any(line == "* SEARCH 2" for line in resp)
+
+
+def test_uid_unknown_subcommand(env):
+    session = _session(env)
+    session.handle_command("a001", "LOGIN", ["andria", "hunter2"])
+    session.handle_command("a002", "SELECT", ["INBOX"])
+    resp = session.handle_command("a003", "UID", ["COPY", "1", "Archive"])
+    assert any("BAD Unsupported UID subcommand" in line for line in resp)

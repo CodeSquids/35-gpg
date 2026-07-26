@@ -65,6 +65,73 @@ def handle_list(session, tag, args):
     return lines
 
 
+def handle_lsub(session, tag, args):
+    """
+    LSUB liste les mailboxes *souscrites*. La plupart des vrais clients
+    IMAP (Thunderbird inclus) s'appuient dessus -- en plus de LIST -- pour
+    peupler leur panneau de dossiers juste après le login. Sans elle, un
+    client peut très bien se connecter et faire un LOGIN réussi sans
+    jamais afficher le moindre message, faute de savoir quel dossier
+    ouvrir.
+
+    Ce projet ne modélise pas de vraie liste de souscription séparée : on
+    considère que toutes les mailboxes existantes sont souscrites
+    (limitation assumée, simple et suffisante ici).
+    """
+    err = _require_authenticated(session, tag)
+    if err:
+        return err
+
+    mailboxes = session.backend.list_mailboxes(session.username)
+    if not mailboxes:
+        session.backend.ensure_mailbox(session.username, "INBOX")
+        mailboxes = ["INBOX"]
+
+    lines = [f'* LSUB () "/" {name}' for name in mailboxes]
+    lines.append(f"{tag} OK LSUB completed")
+    return lines
+
+
+_STATUS_ITEMS = ("MESSAGES", "RECENT", "UIDNEXT", "UIDVALIDITY", "UNSEEN")
+
+
+def handle_status(session, tag, args):
+    """STATUS <mailbox> (<item> <item> ...) -- permet à un client de
+    connaître le nombre de messages/non-lus SANS faire un SELECT complet.
+    Beaucoup de clients (dont Thunderbird) l'utilisent pour afficher les
+    compteurs dans le panneau de dossiers."""
+    err = _require_authenticated(session, tag)
+    if err:
+        return err
+    if len(args) < 2:
+        return [f"{tag} BAD STATUS requires a mailbox name and a data item list"]
+
+    mailbox_name = args[0]
+    items_str = " ".join(args[1:]).strip()
+    if items_str.startswith("(") and items_str.endswith(")"):
+        items_str = items_str[1:-1]
+    requested_items = [item.upper() for item in items_str.split()]
+
+    session.backend.ensure_mailbox(session.username, mailbox_name)
+    messages = session.backend.list_messages(session.username, mailbox_name)
+
+    from storage import Flag  # import local pour éviter un cycle au chargement du module
+
+    counts = {
+        "MESSAGES": len(messages),
+        "RECENT": sum(1 for m in messages if not m.flags),
+        "UNSEEN": sum(1 for m in messages if Flag.SEEN not in m.flags),
+        "UIDNEXT": session.backend.get_next_uid(session.username, mailbox_name),
+        "UIDVALIDITY": session.backend.get_uidvalidity(session.username, mailbox_name),
+    }
+
+    parts = [f"{item} {counts[item]}" for item in requested_items if item in _STATUS_ITEMS]
+    return [
+        f'* STATUS {mailbox_name} ({" ".join(parts)})',
+        f"{tag} OK STATUS completed",
+    ]
+
+
 def handle_create(session, tag, args):
     err = _require_authenticated(session, tag)
     if err:

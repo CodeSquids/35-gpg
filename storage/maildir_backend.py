@@ -184,6 +184,13 @@ class MaildirBackend:
         with self._lock:
             return self._read_uidlist(username, mailbox)["uidvalidity"]
 
+    def get_next_uid(self, username: str, mailbox: str = "INBOX") -> int:
+        """UID qui sera attribué au PROCHAIN message livré. Utilisé par la
+        commande IMAP STATUS (item UIDNEXT)."""
+        self.ensure_mailbox(username, mailbox)
+        with self._lock:
+            return self._read_uidlist(username, mailbox)["next_uid"]
+
     # -- Livraison (utilisé par SMTP, et par IMAP APPEND) --------------------
 
     def deliver_message(
