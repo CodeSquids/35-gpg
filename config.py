@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import argparse
 import os
+import ssl
 from dataclasses import dataclass
 
 # Valeurs par défaut. 0.0.0.0 = écoute sur toutes les interfaces réseau,
@@ -29,6 +30,8 @@ class ServerConfig:
     host: str
     port: int
     data_dir: str
+    tls_cert_file: str | None
+    tls_key_file: str | None
 
 
 def _build_parser(default_port: int) -> argparse.ArgumentParser:
@@ -36,6 +39,8 @@ def _build_parser(default_port: int) -> argparse.ArgumentParser:
     parser.add_argument("--host", type=str, default=None, help="Interface d'écoute (ex: 0.0.0.0, 127.0.0.1, ou l'IP de la VM)")
     parser.add_argument("--port", type=int, default=None, help="Port TCP d'écoute")
     parser.add_argument("--data-dir", type=str, default=None, help="Répertoire de stockage des comptes et Maildirs")
+    parser.add_argument("--tls-cert-file", type=str, default=None, help="Certificat PEM pour TLS implicite")
+    parser.add_argument("--tls-key-file", type=str, default=None, help="Clé privée PEM pour TLS implicite")
     return parser
 
 
@@ -68,8 +73,33 @@ def load_config(server: str, argv: list[str] | None = None) -> ServerConfig:
         or os.environ.get(f"{env_prefix}_DATA_DIR")
         or DEFAULT_DATA_DIR
     )
+    tls_cert_file = args.tls_cert_file or os.environ.get("MAIL_TLS_CERT_FILE")
+    tls_key_file = args.tls_key_file or os.environ.get("MAIL_TLS_KEY_FILE")
 
-    return ServerConfig(host=host, port=port, data_dir=data_dir)
+    if bool(tls_cert_file) != bool(tls_key_file):
+        raise ValueError(
+            "TLS requiert MAIL_TLS_CERT_FILE et MAIL_TLS_KEY_FILE "
+            "(ou --tls-cert-file et --tls-key-file)."
+        )
+
+    return ServerConfig(
+        host=host,
+        port=port,
+        data_dir=data_dir,
+        tls_cert_file=tls_cert_file,
+        tls_key_file=tls_key_file,
+    )
+
+
+def create_tls_context(config: ServerConfig) -> ssl.SSLContext | None:
+    """Construit le contexte TLS serveur, ou ``None`` si TLS est désactivé."""
+    if not config.tls_cert_file:
+        return None
+
+    context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+    context.minimum_version = ssl.TLSVersion.TLSv1_2
+    context.load_cert_chain(config.tls_cert_file, config.tls_key_file)
+    return context
 
 
 def _env_int(name: str) -> int | None:

@@ -14,14 +14,16 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from config import load_config  # noqa: E402
+from config import create_tls_context, load_config  # noqa: E402
 from imap_server.server.tcp_server import run_server  # noqa: E402
 
 
 def main() -> None:
     cfg = load_config("imap")
-    print(f"Démarrage du serveur IMAP sur {cfg.host}:{cfg.port} (data: {cfg.data_dir})")
-    asyncio.run(run_server(cfg.host, cfg.port, cfg.data_dir))
+    tls_context = create_tls_context(cfg)
+    protocol = "IMAPS (TLS)" if tls_context else "IMAP"
+    print(f"Démarrage du serveur {protocol} sur {cfg.host}:{cfg.port} (data: {cfg.data_dir})")
+    asyncio.run(run_server(cfg.host, cfg.port, cfg.data_dir, tls_context))
 
 
 if __name__ == "__main__":

@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+import ssl
 
 from accounts import AccountStore
 from storage import MaildirBackend
@@ -93,7 +94,12 @@ async def _handle_client(reader, writer, account_store, backend) -> None:
             pass
 
 
-async def create_server(host: str, port: int, data_dir: str) -> asyncio.base_events.Server:
+async def create_server(
+    host: str,
+    port: int,
+    data_dir: str,
+    ssl_context: ssl.SSLContext | None = None,
+) -> asyncio.base_events.Server:
     """Voir le commentaire équivalent dans imap_server/server/tcp_server.py."""
     account_store = AccountStore(data_dir=data_dir)
     backend = MaildirBackend(data_dir=data_dir)
@@ -101,13 +107,19 @@ async def create_server(host: str, port: int, data_dir: str) -> asyncio.base_eve
     async def handler(reader, writer):
         await _handle_client(reader, writer, account_store, backend)
 
-    return await asyncio.start_server(handler, host, port)
+    return await asyncio.start_server(handler, host, port, ssl=ssl_context)
 
 
-async def run_server(host: str, port: int, data_dir: str) -> None:
-    server = await create_server(host, port, data_dir)
+async def run_server(
+    host: str,
+    port: int,
+    data_dir: str,
+    ssl_context: ssl.SSLContext | None = None,
+) -> None:
+    server = await create_server(host, port, data_dir, ssl_context)
     addr = ", ".join(str(sock.getsockname()) for sock in server.sockets or [])
-    print(f"Serveur SMTP en écoute sur {addr}")
+    protocol = "SMTPS (TLS)" if ssl_context else "SMTP"
+    print(f"Serveur {protocol} en écoute sur {addr}")
     if _DEBUG:
         print("Mode debug active (SMTP_DEBUG=1) : chaque ligne echangee sera affichee.")
 
