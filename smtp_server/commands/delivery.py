@@ -102,6 +102,12 @@ def handle_data_end(session, raw_message: bytes) -> list[str]:
         session.backend.deliver_message(username, raw_message)
         delivered_to.append(username)
 
+    # Un client SMTP ne stocke pas lui-même les messages envoyés sur le
+    # serveur IMAP. Pour que Thunderbird affiche le dossier « Envoyés », on
+    # conserve donc une copie locale dans la mailbox Sent de l'expéditeur.
+    sender = _local_part(session.mail_from)
+    session.backend.deliver_message(sender, raw_message, mailbox="Sent")
+
     session.mail_from = None
     session.rcpt_to = []
     session.state = SmtpState.GREETED

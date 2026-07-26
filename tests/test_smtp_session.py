@@ -95,6 +95,21 @@ def test_multiple_recipients(env):
     assert len(backend.list_messages("carol")) == 1
 
 
+def test_delivery_saves_a_copy_in_sender_sent_mailbox(env):
+    account_store, backend = env
+    session = _session(env)
+
+    session.handle_command("HELO", "client.local")
+    session.handle_command("MAIL", "FROM:<alice>")
+    session.handle_command("RCPT", "TO:<bob>")
+    session.handle_command("DATA", "")
+    session.finish_data(b"message sent")
+
+    sent_messages = backend.list_messages("alice", mailbox="Sent", include_raw=True)
+    assert len(sent_messages) == 1
+    assert sent_messages[0].raw == b"message sent"
+
+
 # -- Erreurs de sequence -----------------------------------------------------------
 
 def test_mail_before_helo_rejected(env):

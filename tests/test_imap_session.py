@@ -123,6 +123,21 @@ def test_fetch_before_select_rejected(env):
     assert any("NO Please select a mailbox first" in line for line in resp)
 
 
+def test_noop_reports_new_messages_in_selected_mailbox(env):
+    """Un NOOP après une livraison SMTP doit permettre au client IMAP de
+    découvrir les nouveaux messages sans devoir se reconnecter."""
+    account_store, backend = env
+    session = _session(env)
+    session.handle_command("a001", "LOGIN", ["andria", "hunter2"])
+    session.handle_command("a002", "SELECT", ["INBOX"])
+
+    backend.deliver_message("andria", b"new message")
+    resp = session.handle_command("a003", "NOOP", [])
+
+    assert "* 1 EXISTS" in resp
+    assert any("OK NOOP completed" in line for line in resp)
+
+
 # -- FETCH / STORE / SEARCH / EXPUNGE end-to-end -----------------------------------
 
 def test_fetch_flags_and_body(env):
@@ -272,6 +287,37 @@ def test_uid_fetch_body_marks_seen_and_includes_uid(env):
 
     message = backend.get_message("andria", uid=1)
     assert Flag.SEEN in message.flags
+
+
+def test_uid_fetch_thunderbird_header_fields_returns_headers_and_size(env):
+    """Thunderbird demande les métadonnées de liste avec cette forme FETCH.
+    Sans en-têtes ni RFC822.SIZE, il ne peut pas afficher le message."""
+    account_store, backend = env
+    backend.deliver_message(
+        "andria",
+        b"From: bob@example.test\r\nSubject: Salut\r\nX-Ignored: no\r\n\r\nBody",
+    )
+
+    session = _session(env)
+    session.handle_command("a001", "LOGIN", ["andria", "hunter2"])
+    session.handle_command("a002", "SELECT", ["INBOX"])
+    resp = session.handle_command(
+        "a003",
+        "UID",
+        [
+            "FETCH", "1",
+            "(UID", "RFC822.SIZE", "FLAGS",
+            "BODY.PEEK[HEADER.FIELDS", "(From", "Subject)])",
+        ],
+    )
+
+    response = "\n".join(resp)
+    assert "UID 1" in response
+    assert "RFC822.SIZE 61" in response
+    assert "From: bob@example.test" in response
+    assert "Subject: Salut" in response
+    assert "X-Ignored" not in response
+    assert Flag.SEEN not in backend.get_message("andria", uid=1).flags
 
 
 def test_uid_store_by_uid_not_sequence(env):

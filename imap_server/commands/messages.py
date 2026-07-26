@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import re
+
 from storage import Flag
 
 from ..server.session_state import SessionState
@@ -43,6 +45,69 @@ def _extract_header(raw: bytes) -> bytes:
     return raw
 
 
+_HEADER_FIELDS_RE = re.compile(
+    r"BODY(?:\.PEEK)?\[HEADER\.FIELDS\s*\(([^)]*)\)\]",
+    re.IGNORECASE,
+)
+
+
+def _extract_header_fields(raw: bytes, field_names: list[str]) -> bytes:
+    """Retourne uniquement les champs d'en-tête demandés, y compris les
+    lignes de continuation. Thunderbird synchronise les messages avec
+    BODY.PEEK[HEADER.FIELDS (...)] plutôt qu'avec BODY[HEADER]."""
+    wanted = {name.lower() for name in field_names}
+    selected: list[bytes] = []
+    keep_current = False
+
+    for line in _extract_header(raw).splitlines(keepends=True):
+        if line.startswith((b" ", b"\t")):
+            if keep_current:
+                selected.append(line)
+            continue
+
+        name, separator, _value = line.partition(b":")
+        keep_current = bool(separator) and name.decode(
+            "ascii", errors="ignore"
+        ).lower() in wanted
+        if keep_current:
+            selected.append(line)
+
+    return b"".join(selected)
+
+
+def _append_fetch_data_items(
+    parts: list[str], data_items: str, raw: bytes, uid: int, *, always_include_uid: bool
+) -> bool:
+    """Ajoute les éléments FETCH demandés et indique si le message doit être
+    marqué \\Seen. Les en-têtes demandés en PEEK restent non lus."""
+    if always_include_uid or "UID" in data_items:
+        parts.append(f"UID {uid}")
+    if "FLAGS" in data_items:
+        # Les flags sont ajoutés par l'appelant, qui possède le Message.
+        pass
+    if "RFC822.SIZE" in data_items:
+        parts.append(f"RFC822.SIZE {len(raw)}")
+
+    header_fields = _HEADER_FIELDS_RE.search(data_items)
+    if header_fields:
+        field_names = header_fields.group(1).split()
+        header = _extract_header_fields(raw, field_names)
+        section = f"BODY[HEADER.FIELDS ({' '.join(field_names)})]"
+        text = header.decode("utf-8", errors="replace")
+        parts.append(f"{section} {{{len(header)}}}\r\n{text}")
+        return "BODY.PEEK" not in data_items
+    if "BODY[HEADER]" in data_items:
+        header = _extract_header(raw)
+        text = header.decode("utf-8", errors="replace")
+        parts.append(f"BODY[HEADER] {{{len(header)}}}\r\n{text}")
+        return True
+    if "BODY[]" in data_items:
+        text = raw.decode("utf-8", errors="replace")
+        parts.append(f"BODY[] {{{len(raw)}}}\r\n{text}")
+        return True
+    return False
+
+
 def _expand_uid_set(spec: str, existing_uids: list[int]) -> set[int]:
     """
     Traduit une spécification d'ensemble d'UID IMAP ('1:*', '3,7,9',
@@ -73,6 +138,19 @@ def _expand_uid_set(spec: str, existing_uids: list[int]) -> set[int]:
 
 
 def handle_noop(session, tag, args):
+    # NOOP est aussi le mécanisme de synchronisation des clients qui ne
+    # disposent pas d'IDLE : lorsqu'une mailbox est sélectionnée, il doit
+    # signaler les changements survenus depuis le dernier SELECT/FETCH.
+    # Sans cette réponse EXISTS, Thunderbird ne découvre pas les messages
+    # livrés par SMTP pendant que l'INBOX reste ouverte.
+    if session.state == SessionState.SELECTED:
+        messages = session.backend.list_messages(
+            session.username, session.selected_mailbox
+        )
+        return [
+            f"* {len(messages)} EXISTS",
+            f"{tag} OK NOOP completed",
+        ]
     return [f"{tag} OK NOOP completed"]
 
 
@@ -100,15 +178,9 @@ def handle_fetch(session, tag, args):
 
     if "FLAGS" in data_items:
         parts.append(f"FLAGS ({' '.join(message.flags_imap())})")
-    if "UID" in data_items:
-        parts.append(f"UID {message.uid}")
-    if "BODY[HEADER]" in data_items:
-        header = _extract_header(message.raw)
-        text = header.decode("utf-8", errors="replace")
-        parts.append(f"BODY[HEADER] {{{len(header)}}}\r\n{text}")
-    elif "BODY[]" in data_items:
-        text = message.raw.decode("utf-8", errors="replace")
-        parts.append(f"BODY[] {{{len(message.raw)}}}\r\n{text}")
+    body_was_read = _append_fetch_data_items(
+        parts, data_items, message.raw, message.uid, always_include_uid=False
+    )
 
     lines = [f"* {seq_num} FETCH ({' '.join(parts)})"]
 
@@ -116,7 +188,6 @@ def handle_fetch(session, tag, args):
     # seule) le marque \Seen, comme le ferait un vrai serveur -- et le fait
     # migrer new/ -> cur/. Un simple FETCH FLAGS/UID ne compte pas comme une
     # "lecture" du contenu.
-    body_was_read = "BODY[HEADER]" in data_items or "BODY[]" in data_items
     if body_was_read and not session.readonly:
         session.backend.set_flags(
             session.username,
@@ -260,7 +331,6 @@ def _uid_fetch(session, tag, args):
     except ValueError:
         return [f"{tag} BAD Invalid uid-set"]
 
-    body_was_read = "BODY[HEADER]" in data_items or "BODY[]" in data_items
     lines = []
 
     for seq_num, message in enumerate(messages, start=1):
@@ -269,16 +339,12 @@ def _uid_fetch(session, tag, args):
 
         # En UID FETCH, le UID doit TOUJOURS figurer dans la réponse, même
         # si le client ne l'a pas explicitement demandé (RFC 3501 §6.4.8).
-        parts = [f"UID {message.uid}"]
+        parts = []
         if "FLAGS" in data_items:
             parts.append(f"FLAGS ({' '.join(message.flags_imap())})")
-        if "BODY[HEADER]" in data_items:
-            header = _extract_header(message.raw)
-            text = header.decode("utf-8", errors="replace")
-            parts.append(f"BODY[HEADER] {{{len(header)}}}\r\n{text}")
-        elif "BODY[]" in data_items:
-            text = message.raw.decode("utf-8", errors="replace")
-            parts.append(f"BODY[] {{{len(message.raw)}}}\r\n{text}")
+        body_was_read = _append_fetch_data_items(
+            parts, data_items, message.raw, message.uid, always_include_uid=True
+        )
 
         lines.append(f"* {seq_num} FETCH ({' '.join(parts)})")
 
