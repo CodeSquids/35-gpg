@@ -20,8 +20,8 @@ from dataclasses import dataclass
 # ce qui est nécessaire pour qu'une VM cliente puisse joindre le serveur.
 # Pour un test strictement local, on peut surcharger avec MAIL_HOST=127.0.0.1.
 DEFAULT_HOST = "0.0.0.0"
-DEFAULT_IMAP_PORT = 1143
-DEFAULT_SMTP_PORT = 1025
+DEFAULT_IMAP_PORT = 1143 #143
+DEFAULT_SMTP_PORT = 1025 #587
 DEFAULT_DATA_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data")
 
 
