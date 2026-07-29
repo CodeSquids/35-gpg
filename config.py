@@ -20,9 +20,11 @@ from dataclasses import dataclass
 # ce qui est nécessaire pour qu'une VM cliente puisse joindre le serveur.
 # Pour un test strictement local, on peut surcharger avec MAIL_HOST=127.0.0.1.
 DEFAULT_HOST = "0.0.0.0"
-DEFAULT_IMAP_PORT = 1143 #143
-DEFAULT_SMTP_PORT = 1025 #587
+DEFAULT_IMAP_PORT = 1143
+DEFAULT_SMTP_PORT = 1025
 DEFAULT_DATA_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data")
+DEFAULT_RELAY_DOMAINS: list[str] = []
+DEFAULT_RELAY_MAP: dict[str, tuple[str, int]] = {}
 
 
 @dataclass(frozen=True)
@@ -32,6 +34,8 @@ class ServerConfig:
     data_dir: str
     tls_cert_file: str | None
     tls_key_file: str | None
+    relay_domains: list[str]
+    relay_map: dict[str, tuple[str, int]]
 
 
 def _build_parser(default_port: int) -> argparse.ArgumentParser:
@@ -41,6 +45,8 @@ def _build_parser(default_port: int) -> argparse.ArgumentParser:
     parser.add_argument("--data-dir", type=str, default=None, help="Répertoire de stockage des comptes et Maildirs")
     parser.add_argument("--tls-cert-file", type=str, default=None, help="Certificat PEM pour TLS implicite")
     parser.add_argument("--tls-key-file", type=str, default=None, help="Clé privée PEM pour TLS implicite")
+    parser.add_argument("--relay-domains", type=str, default=None, help="Domaines relayés (séparés par virgule, ex: 10.0.2.100,10.0.2.2)")
+    parser.add_argument("--relay-map", type=str, default=None, help="Carte JSON domaine -> hote:port (ex: '{\"10.0.2.100\":\"10.0.2.100:1025\"}')")
     return parser
 
 
@@ -82,12 +88,38 @@ def load_config(server: str, argv: list[str] | None = None) -> ServerConfig:
             "(ou --tls-cert-file et --tls-key-file)."
         )
 
+    relay_domains_raw = (
+        args.relay_domains
+        or os.environ.get("MAIL_RELAY_DOMAINS")
+        or ""
+    )
+    relay_domains = [d.strip() for d in relay_domains_raw.split(",") if d.strip()]
+
+    relay_map_raw = (
+        args.relay_map
+        or os.environ.get("MAIL_RELAY_MAP")
+        or ""
+    )
+    relay_map: dict[str, tuple[str, int]] = {}
+    if relay_map_raw:
+        import json as _json
+
+        parsed = _json.loads(relay_map_raw)
+        for domain, target in parsed.items():
+            if ":" in target:
+                host, port_str = target.rsplit(":", 1)
+                relay_map[domain] = (host, int(port_str))
+            else:
+                relay_map[domain] = (target, DEFAULT_SMTP_PORT)
+
     return ServerConfig(
         host=host,
         port=port,
         data_dir=data_dir,
         tls_cert_file=tls_cert_file,
         tls_key_file=tls_key_file,
+        relay_domains=relay_domains,
+        relay_map=relay_map,
     )
 
 

@@ -23,7 +23,7 @@ def main() -> None:
     tls_context = create_tls_context(cfg)
     protocol = "SMTPS (TLS)" if tls_context else "SMTP"
     print(f"Démarrage du serveur {protocol} sur {cfg.host}:{cfg.port} (data: {cfg.data_dir})")
-    asyncio.run(run_server(cfg.host, cfg.port, cfg.data_dir, tls_context))
+    asyncio.run(run_server(cfg.host, cfg.port, cfg.data_dir, tls_context, relay_domains=cfg.relay_domains, relay_map=cfg.relay_map))
 
 
 if __name__ == "__main__":

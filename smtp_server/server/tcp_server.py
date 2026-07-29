@@ -29,11 +29,10 @@ def _debug(direction: str, text: str) -> None:
         print(f"[SMTP {direction}] {text}")
 
 
-async def _handle_client(reader, writer, account_store, backend) -> None:
+async def _handle_client(reader, writer, session: SmtpSession) -> None:
     peer = writer.get_extra_info("peername")
     _debug("CONN", f"Nouvelle connexion depuis {peer}")
 
-    session = SmtpSession(account_store=account_store, backend=backend)
     greeting = "220 Local mail server ready"
     _debug("<<<", greeting)
     writer.write((greeting + "\r\n").encode("utf-8"))
@@ -99,13 +98,26 @@ async def create_server(
     port: int,
     data_dir: str,
     ssl_context: ssl.SSLContext | None = None,
+    *,
+    relay_domains: list[str] | None = None,
+    relay_map: dict[str, tuple[str, int]] | None = None,
 ) -> asyncio.base_events.Server:
     """Voir le commentaire équivalent dans imap_server/server/tcp_server.py."""
+    if relay_domains is None:
+        relay_domains = []
+    if relay_map is None:
+        relay_map = {}
     account_store = AccountStore(data_dir=data_dir)
     backend = MaildirBackend(data_dir=data_dir)
 
     async def handler(reader, writer):
-        await _handle_client(reader, writer, account_store, backend)
+        session = SmtpSession(
+            account_store=account_store,
+            backend=backend,
+            relay_domains=relay_domains,
+            relay_map=relay_map,
+        )
+        await _handle_client(reader, writer, session)
 
     return await asyncio.start_server(handler, host, port, ssl=ssl_context)
 
@@ -115,8 +127,19 @@ async def run_server(
     port: int,
     data_dir: str,
     ssl_context: ssl.SSLContext | None = None,
+    *,
+    relay_domains: list[str] | None = None,
+    relay_map: dict[str, tuple[str, int]] | None = None,
 ) -> None:
-    server = await create_server(host, port, data_dir, ssl_context)
+    if relay_domains is None:
+        relay_domains = []
+    if relay_map is None:
+        relay_map = {}
+    server = await create_server(
+        host, port, data_dir, ssl_context,
+        relay_domains=relay_domains,
+        relay_map=relay_map,
+    )
     addr = ", ".join(str(sock.getsockname()) for sock in server.sockets or [])
     protocol = "SMTPS (TLS)" if ssl_context else "SMTP"
     print(f"Serveur {protocol} en écoute sur {addr}")

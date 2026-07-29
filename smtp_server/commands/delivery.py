@@ -11,11 +11,17 @@ Autre limitation assumée : pas d'authentification SMTP (AUTH) pour cette
 première version -- on vérifie seulement que l'expéditeur déclaré existe
 en tant que compte local. Ajouter une vraie AUTH (LOGIN/PLAIN) est une
 extension naturelle mais hors scope de cette étape.
+
+Extension de relais : si le domaine du destinataire figure dans la liste
+des domaines relayés (configurée via MAIL_RELAY_DOMAINS), le serveur
+accepte le RCPT TO et transfère le message au serveur SMTP distant
+correspondant via SMTP (RFC 5321).
 """
 
 from __future__ import annotations
 
 import re
+import smtplib
 
 from ..server.session_state import SmtpState
 
@@ -26,13 +32,17 @@ def _extract_address(arg: str) -> str | None:
     match = _ADDR_RE.search(arg)
     if match:
         return match.group(1).strip() or None
-    # Tolère aussi une adresse sans chevrons (certains clients simplistes)
     candidate = arg.strip()
     return candidate or None
 
 
 def _local_part(address: str) -> str:
     return address.split("@", 1)[0]
+
+
+def _domain_part(address: str) -> str | None:
+    parts = address.split("@", 1)
+    return parts[1] if len(parts) == 2 else None
 
 
 def handle_helo(session, arg: str) -> list[str]:
@@ -73,6 +83,12 @@ def handle_rcpt(session, arg: str) -> list[str]:
     if not address:
         return ["501 Syntax: RCPT TO:<address>"]
 
+    domain = _domain_part(address)
+    if domain and domain in session.relay_domains:
+        session.rcpt_to.append(address)
+        session.state = SmtpState.RCPT_SET
+        return ["250 OK"]
+
     username = _local_part(address)
     if not session.account_store.account_exists(username):
         return [f"550 No such local user: {username}"]
@@ -92,25 +108,60 @@ def handle_data_start(session) -> tuple[list[str], bool]:
     return (["354 Start mail input; end with <CRLF>.<CRLF>"], True)
 
 
+def _relay_message(
+    session,
+    address: str,
+    raw_message: bytes,
+) -> bool:
+    """Transfère un message au serveur SMTP distant pour le domaine relayé.
+
+    Retourne True si le transfert a réussi, False sinon.
+    """
+    domain = _domain_part(address)
+    if domain is None or domain not in session.relay_map:
+        return False
+
+    host, port = session.relay_map[domain]
+    try:
+        with smtplib.SMTP(host, port, timeout=10) as remote:
+            remote.sendmail(session.mail_from, [address], raw_message)
+        return True
+    except Exception:
+        return False
+
+
 def handle_data_end(session, raw_message: bytes) -> list[str]:
     """Livre le message à chaque destinataire déclaré, puis réinitialise
     l'état de la transaction (comme le veut le protocole SMTP après un
     message complet)."""
     delivered_to = []
-    for address in session.rcpt_to:
-        username = _local_part(address)
-        session.backend.deliver_message(username, raw_message)
-        delivered_to.append(username)
+    relay_failed = []
 
-    # Un client SMTP ne stocke pas lui-même les messages envoyés sur le
-    # serveur IMAP. Pour que Thunderbird affiche le dossier « Envoyés », on
-    # conserve donc une copie locale dans la mailbox Sent de l'expéditeur.
+    for address in session.rcpt_to:
+        domain = _domain_part(address)
+        if domain and domain in session.relay_domains:
+            success = _relay_message(session, address, raw_message)
+            if success:
+                delivered_to.append(address)
+            else:
+                relay_failed.append(address)
+        else:
+            username = _local_part(address)
+            session.backend.deliver_message(username, raw_message)
+            delivered_to.append(username)
+
     sender = _local_part(session.mail_from)
     session.backend.deliver_message(sender, raw_message, mailbox="Sent")
 
     session.mail_from = None
     session.rcpt_to = []
     session.state = SmtpState.GREETED
+
+    if relay_failed:
+        return [
+            f"250 OK: message delivered to {len(delivered_to)} recipient(s)"
+            f" ({len(relay_failed)} relayed)"
+        ]
 
     return [f"250 OK: message delivered to {len(delivered_to)} recipient(s)"]
 

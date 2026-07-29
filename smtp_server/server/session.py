@@ -18,6 +18,8 @@ from .session_state import SmtpState
 class SmtpSession:
     account_store: object
     backend: object
+    relay_domains: list[str] = field(default_factory=list)
+    relay_map: dict[str, tuple[str, int]] = field(default_factory=dict)
     state: SmtpState = SmtpState.INIT
     client_hostname: str | None = None
     mail_from: str | None = None
