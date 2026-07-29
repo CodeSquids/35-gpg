@@ -1,0 +1,6 @@
+AGENT/
+data/*
+
+*pycache*
+
+
