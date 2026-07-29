@@ -17,7 +17,7 @@ def handle_capability(session, tag, args):
     # session.state. C'est précisément l'inverse de ça qui causait le bug
     # d'origine (LOGIN refusé juste après un CAPABILITY).
     return [
-        "* CAPABILITY IMAP4REV1 IMAP4",
+        "* CAPABILITY IMAP4REV1 IMAP4 MOVE",
         f"{tag} OK CAPABILITY completed",
     ]
 
@@ -43,6 +43,7 @@ def handle_register(session, tag, args):
         return [f"{tag} NO {e}"]
 
     session.backend.ensure_mailbox(username, "INBOX")
+    session.backend.ensure_mailbox(username, "Trash")
     return [f"{tag} OK REGISTER completed"]
 
 
@@ -61,6 +62,9 @@ def handle_login(session, tag, args):
     session.state = SessionState.AUTHENTICATED
     session.username = username
     session.backend.ensure_mailbox(username, "INBOX")
+    # Les comptes créés avant l'ajout de la corbeille sont mis à niveau à la
+    # première connexion.
+    session.backend.ensure_mailbox(username, "Trash")
     return [f"{tag} OK LOGIN completed"]
 
 

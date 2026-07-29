@@ -48,6 +48,7 @@ _DISPATCH = {
     "UNSUBSCRIBE": mailbox.handle_unsubscribe,
     "FETCH": messages.handle_fetch,
     "STORE": messages.handle_store,
+    "MOVE": messages.handle_move,
     "SEARCH": messages.handle_search,
     "UID": messages.handle_uid,
     "EXPUNGE": messages.handle_expunge,

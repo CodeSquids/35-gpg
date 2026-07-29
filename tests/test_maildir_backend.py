@@ -132,6 +132,18 @@ def test_expunge_keeps_non_deleted_messages(backend):
     assert len(backend.list_messages("alice")) == 1
 
 
+def test_move_message_to_trash_preserves_content_and_flags(backend):
+    uid = backend.deliver_message("alice", b"keep this message")
+    backend.set_flags("alice", uid, {Flag.SEEN, Flag.FLAGGED})
+
+    trash_uid = backend.move_message("alice", uid, destination_mailbox="Trash")
+
+    assert backend.list_messages("alice") == []
+    trashed = backend.get_message("alice", trash_uid, mailbox="Trash")
+    assert trashed.raw == b"keep this message"
+    assert trashed.flags == {Flag.SEEN, Flag.FLAGGED}
+
+
 def test_mailboxes_are_isolated_per_user(backend):
     backend.deliver_message("alice", b"for alice")
     backend.deliver_message("bob", b"for bob")

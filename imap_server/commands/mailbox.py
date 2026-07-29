@@ -60,7 +60,11 @@ def handle_list(session, tag, args):
         session.backend.ensure_mailbox(session.username, "INBOX")
         mailboxes = ["INBOX"]
 
-    lines = [f'* LIST () "/" {name}' for name in mailboxes]
+    lines = [
+        (f'* LIST (\\Trash) "/" {name}' if name == "Trash"
+         else f'* LIST () "/" {name}')
+        for name in mailboxes
+    ]
     lines.append(f"{tag} OK LIST completed")
     return lines
 
@@ -87,7 +91,11 @@ def handle_lsub(session, tag, args):
         session.backend.ensure_mailbox(session.username, "INBOX")
         mailboxes = ["INBOX"]
 
-    lines = [f'* LSUB () "/" {name}' for name in mailboxes]
+    lines = [
+        (f'* LSUB (\\Trash) "/" {name}' if name == "Trash"
+         else f'* LSUB () "/" {name}')
+        for name in mailboxes
+    ]
     lines.append(f"{tag} OK LSUB completed")
     return lines
 
