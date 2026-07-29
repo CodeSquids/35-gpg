@@ -356,6 +356,63 @@ class MaildirBackend:
 
         return Message(uid=uid, filename=new_filename, flags=new_flags, raw=None)
 
+    # -- Déplacement ----------------------------------------------------------
+
+    def move_message(
+        self,
+        username: str,
+        uid: int,
+        source_mailbox: str = "INBOX",
+        destination_mailbox: str = "Trash",
+    ) -> int:
+        """Déplace un message vers une autre mailbox et retourne son UID de
+        destination.
+
+        Les UID IMAP ne sont valables que dans une mailbox : le message reçoit
+        donc un nouvel UID dans le dossier cible. Le fichier est d'abord livré
+        dans la destination, puis seulement retiré de la source : une erreur
+        pendant la copie ne peut ainsi pas faire perdre le message original.
+        """
+        if _normalize_mailbox_name(source_mailbox) == _normalize_mailbox_name(
+            destination_mailbox
+        ):
+            # Déplacer un message dans son propre dossier est un no-op.
+            self.get_message(username, uid, source_mailbox)
+            return uid
+
+        message = self.get_message(username, uid, source_mailbox)
+        destination_uid = self.deliver_message(
+            username, message.raw, destination_mailbox
+        )
+
+        # Un message placé dans la corbeille ne doit pas y arriver déjà marqué
+        # \Deleted. Les autres flags (notamment \Seen) sont conservés.
+        destination_flags = message.flags - {Flag.DELETED}
+        if destination_flags:
+            self.set_flags(
+                username,
+                destination_uid,
+                destination_flags,
+                mailbox=destination_mailbox,
+            )
+
+        entries = self._scan(username, source_mailbox)
+        target = next((entry for entry in entries if entry.uid == uid), None)
+        if target is None:
+            raise NoSuchMessageError(
+                f"Aucun message avec UID {uid} dans {source_mailbox}."
+            )
+
+        base = self._mailbox_dir(username, source_mailbox)
+        directory = "new" if target.in_new else "cur"
+        os.remove(os.path.join(base, directory, target.filename))
+        with self._lock:
+            data = self._read_uidlist(username, source_mailbox)
+            data["map"].pop(target.filename, None)
+            self._write_uidlist(username, source_mailbox, data)
+
+        return destination_uid
+
     # -- Expunge ---------------------------------------------------------------
 
     def expunge(self, username: str, mailbox: str = "INBOX") -> list[int]:

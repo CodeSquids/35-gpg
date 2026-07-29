@@ -204,6 +204,32 @@ def test_expunge_removes_deleted_message(env):
     assert len(remaining) == 1
 
 
+def test_uid_move_puts_message_in_trash(env):
+    account_store, backend = env
+    backend.deliver_message("andria", b"delete me")
+
+    session = _session(env)
+    session.handle_command("a001", "LOGIN", ["andria", "hunter2"])
+    session.handle_command("a002", "SELECT", ["INBOX"])
+    resp = session.handle_command("a003", "UID", ["MOVE", "1", "Trash"])
+
+    assert any("UID MOVE completed" in line for line in resp)
+    assert backend.list_messages("andria", "INBOX") == []
+    trashed = backend.list_messages("andria", "Trash", include_raw=True)
+    assert len(trashed) == 1
+    assert trashed[0].raw == b"delete me"
+
+
+def test_trash_is_advertised_as_a_move_destination(env):
+    session = _session(env)
+    capability = session.handle_command("a001", "CAPABILITY", [])
+    session.handle_command("a002", "LOGIN", ["andria", "hunter2"])
+    folders = session.handle_command("a003", "LIST", ["", "*"])
+
+    assert any(" MOVE" in line for line in capability)
+    assert '* LIST (\\Trash) "/" Trash' in folders
+
+
 def test_examine_is_read_only(env):
     account_store, backend = env
     backend.deliver_message("andria", b"body")

@@ -1,4 +1,4 @@
-"""Commandes du groupe MESSAGES : FETCH, STORE, SEARCH, EXPUNGE, NOOP."""
+"""Commandes du groupe MESSAGES : FETCH, STORE, MOVE, SEARCH, EXPUNGE, NOOP."""
 
 from __future__ import annotations
 
@@ -137,6 +137,11 @@ def _expand_uid_set(spec: str, existing_uids: list[int]) -> set[int]:
     return result
 
 
+def _expand_sequence_set(spec: str, message_count: int) -> set[int]:
+    """Développe un message-set IMAP en numéros de séquence (1-indexés)."""
+    return _expand_uid_set(spec, list(range(1, message_count + 1)))
+
+
 def handle_noop(session, tag, args):
     # NOOP est aussi le mécanisme de synchronisation des clients qui ne
     # disposent pas d'IDLE : lorsqu'une mailbox est sélectionnée, il doit
@@ -238,6 +243,44 @@ def handle_store(session, tag, args):
     ]
 
 
+def handle_move(session, tag, args):
+    """MOVE <message-set> <mailbox> : déplacement réversible vers Trash."""
+    err = _require_selected(session, tag)
+    if err:
+        return err
+    if len(args) < 2:
+        return [f"{tag} BAD MOVE requires a message-set and a destination mailbox"]
+    if session.readonly:
+        return [f"{tag} NO Mailbox is read-only"]
+
+    messages = session.backend.list_messages(session.username, session.selected_mailbox)
+    try:
+        sequence_numbers = _expand_sequence_set(args[0], len(messages))
+    except ValueError:
+        return [f"{tag} BAD Invalid message-set"]
+
+    destination = args[1]
+    moved = []
+    for sequence_number in sorted(sequence_numbers, reverse=True):
+        message = messages[sequence_number - 1]
+        destination_uid = session.backend.move_message(
+            session.username, message.uid, session.selected_mailbox, destination
+        )
+        moved.append((message.uid, destination_uid))
+
+    lines = [f"* {sequence_number} EXPUNGE" for sequence_number in sorted(sequence_numbers, reverse=True)]
+    if moved:
+        uidvalidity = session.backend.get_uidvalidity(session.username, destination)
+        source_uids = ",".join(str(source_uid) for source_uid, _ in moved)
+        destination_uids = ",".join(str(destination_uid) for _, destination_uid in moved)
+        lines.append(
+            f"{tag} OK [COPYUID {uidvalidity} {source_uids} {destination_uids}] MOVE completed"
+        )
+    else:
+        lines.append(f"{tag} OK MOVE completed")
+    return lines
+
+
 def handle_search(session, tag, args):
     err = _require_selected(session, tag)
     if err:
@@ -305,6 +348,8 @@ def handle_uid(session, tag, args):
         return _uid_fetch(session, tag, rest)
     if subcommand == "STORE":
         return _uid_store(session, tag, rest)
+    if subcommand == "MOVE":
+        return _uid_move(session, tag, rest)
     if subcommand == "SEARCH":
         return _uid_search(session, tag, rest)
 
@@ -397,6 +442,50 @@ def _uid_store(session, tag, args):
         lines.append(f"* {seq_num} FETCH (FLAGS ({' '.join(updated.flags_imap())}) UID {message.uid})")
 
     lines.append(f"{tag} OK UID STORE completed")
+    return lines
+
+
+def _uid_move(session, tag, args):
+    err = _require_selected(session, tag)
+    if err:
+        return err
+    if len(args) < 2:
+        return [f"{tag} BAD UID MOVE requires a uid-set and a destination mailbox"]
+    if session.readonly:
+        return [f"{tag} NO Mailbox is read-only"]
+
+    messages = session.backend.list_messages(session.username, session.selected_mailbox)
+    try:
+        target_uids = _expand_uid_set(args[0], [message.uid for message in messages])
+    except ValueError:
+        return [f"{tag} BAD Invalid uid-set"]
+
+    destination = args[1]
+    moved = []
+    # Sequence numbers are reported before the source mailbox is altered.
+    sequence_numbers = [
+        sequence_number
+        for sequence_number, message in enumerate(messages, start=1)
+        if message.uid in target_uids
+    ]
+    for message in messages:
+        if message.uid not in target_uids:
+            continue
+        destination_uid = session.backend.move_message(
+            session.username, message.uid, session.selected_mailbox, destination
+        )
+        moved.append((message.uid, destination_uid))
+
+    lines = [f"* {sequence_number} EXPUNGE" for sequence_number in reversed(sequence_numbers)]
+    if moved:
+        uidvalidity = session.backend.get_uidvalidity(session.username, destination)
+        source_uids = ",".join(str(source_uid) for source_uid, _ in moved)
+        destination_uids = ",".join(str(destination_uid) for _, destination_uid in moved)
+        lines.append(
+            f"{tag} OK [COPYUID {uidvalidity} {source_uids} {destination_uids}] UID MOVE completed"
+        )
+    else:
+        lines.append(f"{tag} OK UID MOVE completed")
     return lines
 
 
